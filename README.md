@@ -46,6 +46,27 @@ python3 wechat_web_auto_assistant.py \
   --threshold 0.7
 ```
 
+
+#### 你这张图的预设配置（1696x896）
+
+我根据你发的截图做了一个可直接试跑的预设：`wechat_regions.wx_1696x896.json`。
+
+Windows PowerShell：
+
+```powershell
+Copy-Item .\wechat_regions.wx_1696x896.json .\wechat_regions.json
+python .\wechat_web_auto_assistant.py `
+  --url "https://wx.qq.com" `
+  --templates ".\templates" `
+  --config ".\wechat_regions.json" `
+  --interval 1.2 `
+  --threshold 0.68
+```
+
+如果你看到：
+- 手牌经常少识别/多识别：先微调 `hand_region` 的 `x/w`。
+- 右/左/上家牌河识别错位：分别微调 `river_regions` 三个框。
+
 #### 模板目录约定
 
 模板文件名必须是牌名，例如：
