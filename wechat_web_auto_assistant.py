@@ -1,34 +1,15 @@
 #!/usr/bin/env python3
-"""微信 Web 版麻将全自动识别+牌理分析（本地运行）。
-
-说明：
-- 使用 Playwright 周期性截取页面截图。
-- 使用 OpenCV 模板匹配识别：我方手牌 + 三家牌河（已出牌）。
-- 识别到我方 14 张时调用 `mahjong_helper.py` 中的算法给出弃牌建议。
-
-注意：不同页面主题/分辨率需要自行准备模板图与区域配置。
-"""
+"""微信 Web 版麻将全自动识别+牌理分析（本地运行）。"""
 
 from __future__ import annotations
 
 import argparse
 import json
+import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Tuple
-
-import numpy as np
-
-try:
-    import cv2
-except Exception as exc:  # pragma: no cover
-    raise RuntimeError("需要安装 opencv-python 才能运行自动识别") from exc
-
-try:
-    from playwright.sync_api import sync_playwright
-except Exception as exc:  # pragma: no cover
-    raise RuntimeError("需要安装 playwright 并执行 playwright install") from exc
+from typing import Any, Dict, List, Tuple
 
 from mahjong_helper import pretty_hand, shanten, suggest_discards, to_counts
 
@@ -55,8 +36,23 @@ class Region:
         return max(0, x1), max(0, y1), min(width, x2), min(height, y2)
 
 
-def load_templates(template_dir: Path) -> Dict[str, np.ndarray]:
-    templates: Dict[str, np.ndarray] = {}
+def load_runtime_deps() -> Tuple[Any, Any]:
+    """延迟加载重依赖：保证 `--help` 在缺少图像依赖时也可用。"""
+    try:
+        import cv2  # type: ignore
+    except Exception as exc:  # pragma: no cover
+        raise RuntimeError("需要安装 opencv-python 才能运行自动识别") from exc
+
+    try:
+        from playwright.sync_api import sync_playwright  # type: ignore
+    except Exception as exc:  # pragma: no cover
+        raise RuntimeError("需要安装 playwright 并执行 playwright install") from exc
+
+    return cv2, sync_playwright
+
+
+def load_templates(template_dir: Path, cv2: Any) -> Dict[str, Any]:
+    templates: Dict[str, Any] = {}
     for t in TILE_NAMES:
         img_path = template_dir / f"{t}.png"
         if not img_path.exists():
@@ -70,11 +66,12 @@ def load_templates(template_dir: Path) -> Dict[str, np.ndarray]:
 
 
 def detect_tiles_by_slots(
-    gray: np.ndarray,
+    gray: Any,
     region: Tuple[int, int, int, int],
-    templates: Dict[str, np.ndarray],
+    templates: Dict[str, Any],
     slots: int,
     threshold: float,
+    cv2: Any,
 ) -> List[str]:
     x1, y1, x2, y2 = region
     crop = gray[y1:y2, x1:x2]
@@ -136,12 +133,14 @@ def tile_name_to_index(name: str) -> int:
 
 def run_loop(
     url: str,
-    templates: Dict[str, np.ndarray],
+    templates: Dict[str, Any],
     hand_region: Region,
     river_regions: List[Region],
     interval: float,
     threshold: float,
     headless: bool,
+    cv2: Any,
+    sync_playwright: Any,
 ) -> None:
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=headless)
@@ -149,40 +148,45 @@ def run_loop(
         page.goto(url, wait_until="domcontentloaded")
         print("已打开页面，请先登录并进入牌局。")
 
-        while True:
-            png = page.screenshot(full_page=False)
-            img = cv2.imdecode(np.frombuffer(png, np.uint8), cv2.IMREAD_COLOR)
-            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-            h, w = gray.shape
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=True) as tmp:
+            while True:
+                page.screenshot(path=tmp.name, full_page=False)
+                img = cv2.imread(tmp.name, cv2.IMREAD_COLOR)
+                if img is None:
+                    print("截图读取失败，跳过本轮。")
+                    time.sleep(interval)
+                    continue
+                gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+                h, w = gray.shape
 
-            hand_px = hand_region.to_pixels(w, h)
-            hand_tiles = detect_tiles_by_slots(gray, hand_px, templates, slots=14, threshold=threshold)
+                hand_px = hand_region.to_pixels(w, h)
+                hand_tiles = detect_tiles_by_slots(gray, hand_px, templates, slots=14, threshold=threshold, cv2=cv2)
 
-            river_text = []
-            for idx, rr in enumerate(river_regions, start=1):
-                rr_px = rr.to_pixels(w, h)
-                tiles = detect_tiles_by_slots(gray, rr_px, templates, slots=24, threshold=threshold)
-                river_text.append(f"P{idx}:{','.join(tiles) if tiles else '-'}")
+                river_text = []
+                for idx, rr in enumerate(river_regions, start=1):
+                    rr_px = rr.to_pixels(w, h)
+                    tiles = detect_tiles_by_slots(gray, rr_px, templates, slots=24, threshold=threshold, cv2=cv2)
+                    river_text.append(f"P{idx}:{','.join(tiles) if tiles else '-'}")
 
-            print("\n=== 识别结果 ===")
-            print("手牌:", " ".join(hand_tiles) if hand_tiles else "-")
-            print("牌河:", " | ".join(river_text) if river_text else "-")
+                print("\n=== 识别结果 ===")
+                print("手牌:", " ".join(hand_tiles) if hand_tiles else "-")
+                print("牌河:", " | ".join(river_text) if river_text else "-")
 
-            if len(hand_tiles) in (13, 14):
-                try:
-                    hand_idx = [tile_name_to_index(x) for x in hand_tiles]
-                    cnt = to_counts(hand_idx)
-                    print("向听:", shanten(cnt), "| 手牌整理:", pretty_hand(hand_idx))
-                    if len(hand_idx) == 14:
-                        rec = suggest_discards(hand_idx)[:5]
-                        for r in rec:
-                            print(f"建议弃 {r.discard} -> 向听 {r.shanten_after_discard}, 进张 {r.ukeire}")
-                except Exception as e:
-                    print("牌理计算失败:", e)
-            else:
-                print("当前未识别到 13/14 张完整手牌，跳过牌理计算。")
+                if len(hand_tiles) in (13, 14):
+                    try:
+                        hand_idx = [tile_name_to_index(x) for x in hand_tiles]
+                        cnt = to_counts(hand_idx)
+                        print("向听:", shanten(cnt), "| 手牌整理:", pretty_hand(hand_idx))
+                        if len(hand_idx) == 14:
+                            rec = suggest_discards(hand_idx)[:5]
+                            for r in rec:
+                                print(f"建议弃 {r.discard} -> 向听 {r.shanten_after_discard}, 进张 {r.ukeire}")
+                    except Exception as e:
+                        print("牌理计算失败:", e)
+                else:
+                    print("当前未识别到 13/14 张完整手牌，跳过牌理计算。")
 
-            time.sleep(interval)
+                time.sleep(interval)
 
 
 def main() -> None:
@@ -195,7 +199,8 @@ def main() -> None:
     parser.add_argument("--headless", action="store_true", help="无头浏览器")
     args = parser.parse_args()
 
-    templates = load_templates(Path(args.templates))
+    cv2, sync_playwright = load_runtime_deps()
+    templates = load_templates(Path(args.templates), cv2=cv2)
     hand_region, river_regions = parse_regions(Path(args.config))
     run_loop(
         url=args.url,
@@ -205,6 +210,8 @@ def main() -> None:
         interval=args.interval,
         threshold=args.threshold,
         headless=args.headless,
+        cv2=cv2,
+        sync_playwright=sync_playwright,
     )
 
 

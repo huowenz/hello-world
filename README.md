@@ -30,7 +30,7 @@ python3 mahjong_helper.py "123m456m789p11s22z"
 #### 安装依赖
 
 ```bash
-pip install playwright opencv-python numpy
+pip install playwright opencv-python
 playwright install chromium
 ```
 
