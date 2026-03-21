@@ -2,29 +2,69 @@
 
 ## 本地麻将辅助算法
 
-新增 `mahjong_helper.py`，可在离线环境下进行：
+### 1) 手动输入版（已实现）
 
+`mahjong_helper.py` 可离线进行：
 - 手牌解析（万/筒/索/字）
 - 和牌判断（标准型 + 七对子）
 - 向听数计算（标准型 + 七对子）
 - 14 张手牌的弃牌建议（按向听和进张数排序）
 
-## 运行方式
+运行：
 
 ```bash
 python3 mahjong_helper.py "123m456m789p11s22z"
 ```
 
-或者：
+---
+
+### 2) 微信 Web 全自动版（新增）
+
+新增 `wechat_web_auto_assistant.py`：
+- 自动打开微信 Web 页面（Playwright）
+- 周期截图并识别：我方手牌 + 三家牌河（OpenCV 模板匹配）
+- 自动调用牌理算法输出向听与前 5 条弃牌建议
+
+> 注意：你需要自己准备模板图片（`templates/*.png`）和区域配置文件（可从 `wechat_regions.example.json` 复制）。
+
+#### 安装依赖
 
 ```bash
-python3 mahjong_helper.py "1m 2m 3m 4m 5m 6m 7p 8p 9p 1s 1s 2z 2z"
+pip install playwright opencv-python numpy
+playwright install chromium
 ```
 
-## 输出说明
+#### 启动方式
 
-- `向听 = -1`：已和牌
-- `向听 = 0`：听牌
-- `向听 > 0`：距离听牌还需改良的步数
+```bash
+cp wechat_regions.example.json wechat_regions.json
+python3 wechat_web_auto_assistant.py \
+  --url "https://wx.qq.com" \
+  --templates "./templates" \
+  --config "./wechat_regions.json" \
+  --interval 1.5 \
+  --threshold 0.7
+```
 
-当输入为 14 张时，会输出前 10 条弃牌建议。
+#### 模板目录约定
+
+模板文件名必须是牌名，例如：
+
+- `templates/1m.png`
+- `templates/9p.png`
+- `templates/5s.png`
+- `templates/1z.png` ~ `templates/7z.png`
+
+#### 输出说明
+
+每轮会打印：
+- 识别到的手牌
+- 三家牌河
+- 向听数
+- 若识别为 14 张手牌，输出前 5 条弃牌建议
+
+---
+
+## 免责声明
+
+请仅用于学习/研究与本地测试。接入任何线上平台前，请先确认平台规则与当地法律法规。
